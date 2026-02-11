@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer 
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Brush 
 } from 'recharts';
-import { Search, X, Activity, AlertCircle } from 'lucide-react';
+import { Search, X, Activity, AlertCircle, RotateCcw } from 'lucide-react';
 import { format } from 'date-fns';
 
 // --- Types ---
@@ -33,6 +33,58 @@ export default function SteamCompareApp() {
   const [selectedGames, setSelectedGames] = useState<SelectedGame[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [usedColors, setUsedColors] = useState<Set<string>>(new Set());
+  const [startDate, setStartDate] = useState<number | null>(null);
+  const [endDate, setEndDate] = useState<number | null>(null);
+  const [brushStartIndex, setBrushStartIndex] = useState<number | undefined>(undefined);
+  const [brushEndIndex, setBrushEndIndex] = useState<number | undefined>(undefined);
+
+  // Get next available color
+  const getNextAvailableColor = (): string => {
+    for (const color of COLORS) {
+      if (!usedColors.has(color)) {
+        return color;
+      }
+    }
+    // If all colors are used, cycle through them
+    return COLORS[selectedGames.length % COLORS.length];
+  };
+
+  // Calculate smart default date range when games change
+  useEffect(() => {
+    if (selectedGames.length === 0) {
+      setStartDate(null);
+      setEndDate(null);
+      setBrushStartIndex(undefined);
+      setBrushEndIndex(undefined);
+      return;
+    }
+
+    // Find the intersection of all games' date ranges
+    let maxStart = -Infinity;
+    let minEnd = Infinity;
+
+    selectedGames.forEach(game => {
+      if (game.data.length > 0) {
+        const gameStart = game.data[0].date;
+        const gameEnd = game.data[game.data.length - 1].date;
+        maxStart = Math.max(maxStart, gameStart);
+        minEnd = Math.min(minEnd, gameEnd);
+      }
+    });
+
+    // If there's an intersection, use it
+    if (maxStart <= minEnd && maxStart !== -Infinity) {
+      setStartDate(maxStart);
+      setEndDate(minEnd);
+    } else {
+      // No intersection - default to most recent 12 months
+      const now = Date.now();
+      const twelveMonthsAgo = now - (365 * 24 * 60 * 60 * 1000);
+      setStartDate(twelveMonthsAgo);
+      setEndDate(now);
+    }
+  }, [selectedGames]);
 
   // 1. Search Logic
   const handleSearch = async (e: React.FormEvent) => {
@@ -65,12 +117,14 @@ export default function SteamCompareApp() {
 
       if (json.error) throw new Error(json.error);
 
+      const color = getNextAvailableColor();
       const newGame: SelectedGame = {
         ...game,
-        color: COLORS[selectedGames.length % COLORS.length],
+        color,
         data: json.data // Real historical data
       };
 
+      setUsedColors(prev => new Set([...prev, color]));
       setSelectedGames(prev => [...prev, newGame]);
     } catch {
       setError(`Could not load data for ${game.name}. It might not be tracked publicly.`);
@@ -80,6 +134,14 @@ export default function SteamCompareApp() {
   };
 
   const removeGame = (id: number) => {
+    const gameToRemove = selectedGames.find(g => g.id === id);
+    if (gameToRemove) {
+      setUsedColors(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(gameToRemove.color);
+        return newSet;
+      });
+    }
     setSelectedGames(prev => prev.filter(g => g.id !== id));
   };
 
@@ -93,8 +155,6 @@ export default function SteamCompareApp() {
 
     selectedGames.forEach(game => {
       game.data.forEach(point => {
-        // Round timestamps to nearest day to align data points roughly
-        // (Optional: remove this if you want exact hourly precision, but it makes the chart heavy)
         const dateKey = point.date; 
         
         if (!dateMap.has(dateKey)) {
@@ -106,10 +166,62 @@ export default function SteamCompareApp() {
     });
 
     // Convert map to array and sort by date
-    return Array.from(dateMap.values()).sort((a, b) => a.date - b.date);
+    let data = Array.from(dateMap.values()).sort((a, b) => a.date - b.date);
+
+    // Filter by date range if set
+    if (startDate !== null && endDate !== null) {
+      data = data.filter(point => point.date >= startDate && point.date <= endDate);
+    }
+
+    return data;
   };
 
   const chartData = processChartData();
+
+  // Reset zoom to default
+  const resetZoom = () => {
+    if (selectedGames.length === 0) return;
+
+    // Recalculate default range
+    let maxStart = -Infinity;
+    let minEnd = Infinity;
+
+    selectedGames.forEach(game => {
+      if (game.data.length > 0) {
+        const gameStart = game.data[0].date;
+        const gameEnd = game.data[game.data.length - 1].date;
+        maxStart = Math.max(maxStart, gameStart);
+        minEnd = Math.min(minEnd, gameEnd);
+      }
+    });
+
+    if (maxStart <= minEnd && maxStart !== -Infinity) {
+      setStartDate(maxStart);
+      setEndDate(minEnd);
+    } else {
+      const now = Date.now();
+      const twelveMonthsAgo = now - (365 * 24 * 60 * 60 * 1000);
+      setStartDate(twelveMonthsAgo);
+      setEndDate(now);
+    }
+    setBrushStartIndex(undefined);
+    setBrushEndIndex(undefined);
+  };
+
+  // Handle date input changes
+  const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newStart = new Date(e.target.value).getTime();
+    if (!isNaN(newStart)) {
+      setStartDate(newStart);
+    }
+  };
+
+  const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newEnd = new Date(e.target.value).getTime();
+    if (!isNaN(newEnd)) {
+      setEndDate(newEnd);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans p-4 md:p-8">
@@ -161,6 +273,37 @@ export default function SteamCompareApp() {
           <div className="bg-red-900/20 border border-red-500/50 text-red-200 px-4 py-3 rounded-lg flex items-center gap-2">
             <AlertCircle className="w-5 h-5" />
             {error}
+          </div>
+        )}
+
+        {/* Date Range Controls */}
+        {selectedGames.length > 0 && (
+          <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-slate-400">Start Date:</label>
+              <input
+                type="date"
+                value={startDate ? format(new Date(startDate), 'yyyy-MM-dd') : ''}
+                onChange={handleStartDateChange}
+                className="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm text-white focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-slate-400">End Date:</label>
+              <input
+                type="date"
+                value={endDate ? format(new Date(endDate), 'yyyy-MM-dd') : ''}
+                onChange={handleEndDateChange}
+                className="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm text-white focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              />
+            </div>
+            <button
+              onClick={resetZoom}
+              className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded px-3 py-1 text-sm text-white transition-colors"
+            >
+              <RotateCcw className="w-4 h-4" />
+              Reset Zoom
+            </button>
           </div>
         )}
 
@@ -224,8 +367,26 @@ export default function SteamCompareApp() {
                     fill={`url(#color-${game.id})`}
                     strokeWidth={2}
                     animationDuration={1000}
+                    connectNulls={true}
                   />
                 ))}
+                <Brush
+                  dataKey="date"
+                  height={30}
+                  stroke="#475569"
+                  fill="#1e293b"
+                  tickFormatter={(unix) => format(new Date(unix), 'MMM yyyy')}
+                  startIndex={brushStartIndex}
+                  endIndex={brushEndIndex}
+                  onChange={(range: any) => {
+                    if (range && chartData.length > 0) {
+                      setBrushStartIndex(range.startIndex);
+                      setBrushEndIndex(range.endIndex);
+                      setStartDate(chartData[range.startIndex].date);
+                      setEndDate(chartData[range.endIndex].date);
+                    }
+                  }}
+                />
               </AreaChart>
             </ResponsiveContainer>
           ) : (
