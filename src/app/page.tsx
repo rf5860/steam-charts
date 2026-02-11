@@ -331,16 +331,20 @@ export default function SteamCompareApp() {
 
   // Handle date input changes
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newStart = new Date(e.target.value).getTime();
-    if (!isNaN(newStart)) {
-      setStartDate(newStart);
+    const date = new Date(e.target.value);
+    if (!isNaN(date.getTime())) {
+      // Set to start of day (00:00:00.000)
+      date.setHours(0, 0, 0, 0);
+      setStartDate(date.getTime());
     }
   };
 
   const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newEnd = new Date(e.target.value).getTime();
-    if (!isNaN(newEnd)) {
-      setEndDate(newEnd);
+    const date = new Date(e.target.value);
+    if (!isNaN(date.getTime())) {
+      // Set to end of day (23:59:59.999)
+      date.setHours(23, 59, 59, 999);
+      setEndDate(date.getTime());
     }
   };
 
