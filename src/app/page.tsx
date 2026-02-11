@@ -27,75 +27,32 @@ type SelectedGame = Game & {
 // Colors for different lines
 const COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
-// Utility function to aggregate data points by time interval with outlier preservation
+// Utility function to aggregate data points by time interval
 const aggregateData = (data: HistoricalPoint[], intervalMs: number): HistoricalPoint[] => {
   if (data.length === 0) return [];
   
-  // Group data points into buckets
-  const buckets = new Map<number, HistoricalPoint[]>();
+  const buckets = new Map<number, { sum: number; count: number }>();
   
   data.forEach(point => {
     // Round down to the nearest interval
     const bucketKey = Math.floor(point.date / intervalMs) * intervalMs;
     
     if (!buckets.has(bucketKey)) {
-      buckets.set(bucketKey, []);
+      buckets.set(bucketKey, { sum: 0, count: 0 });
     }
     
-    buckets.get(bucketKey)!.push(point);
+    const bucket = buckets.get(bucketKey)!;
+    bucket.sum += point.count;
+    bucket.count += 1;
   });
   
-  // Process each bucket to detect and preserve outliers
-  const result: HistoricalPoint[] = [];
-  
-  buckets.forEach((points, bucketDate) => {
-    if (points.length === 1) {
-      // Single point - just use it
-      result.push(points[0]);
-      return;
-    }
-    
-    // Calculate mean
-    const mean = points.reduce((sum, p) => sum + p.count, 0) / points.length;
-    
-    // Calculate standard deviation
-    const variance = points.reduce((sum, p) => sum + Math.pow(p.count - mean, 2), 0) / points.length;
-    const stdDev = Math.sqrt(variance);
-    
-    // Identify outliers (points that deviate significantly from mean)
-    // Using 1.5 standard deviations as threshold, or 50% deviation for low stdDev cases
-    const threshold = Math.max(stdDev * 1.5, mean * 0.5);
-    
-    const outliers: HistoricalPoint[] = [];
-    const normalPoints: HistoricalPoint[] = [];
-    
-    points.forEach(point => {
-      if (Math.abs(point.count - mean) > threshold) {
-        outliers.push(point);
-      } else {
-        normalPoints.push(point);
-      }
-    });
-    
-    // If we have outliers, preserve them individually
-    if (outliers.length > 0) {
-      // Add all outliers with their actual timestamps
-      outliers.forEach(outlier => result.push(outlier));
-      
-      // If there are normal points, add their average at the bucket timestamp
-      if (normalPoints.length > 0) {
-        const normalAvg = Math.round(
-          normalPoints.reduce((sum, p) => sum + p.count, 0) / normalPoints.length
-        );
-        result.push({ date: bucketDate, count: normalAvg });
-      }
-    } else {
-      // No outliers - just use the average at the bucket timestamp
-      result.push({ date: bucketDate, count: Math.round(mean) });
-    }
-  });
-  
-  return result.sort((a, b) => a.date - b.date);
+  // Convert buckets to array and calculate averages
+  return Array.from(buckets.entries())
+    .map(([date, { sum, count }]) => ({
+      date,
+      count: Math.round(sum / count)
+    }))
+    .sort((a, b) => a.date - b.date);
 };
 
 // Determine appropriate interval based on time range
