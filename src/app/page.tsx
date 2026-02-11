@@ -31,6 +31,11 @@ const COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'
 const aggregateData = (data: HistoricalPoint[], intervalMs: number): HistoricalPoint[] => {
   if (data.length === 0) return [];
   
+  // If intervalMs is 0, return all data points without aggregation
+  if (intervalMs === 0) {
+    return data.sort((a, b) => a.date - b.date);
+  }
+  
   const buckets = new Map<number, { sum: number; count: number }>();
   
   data.forEach(point => {
@@ -62,8 +67,11 @@ const getAggregationInterval = (startDate: number, endDate: number): number => {
   const WEEK = 7 * DAY;
   const MONTH = 30 * DAY;
   
-  if (rangeMs <= 7 * DAY) {
-    // Less than 7 days: hourly (or keep all data)
+  if (rangeMs <= DAY) {
+    // Less than 1 day: keep all data points (no aggregation)
+    return 0;
+  } else if (rangeMs <= 7 * DAY) {
+    // 1-7 days: hourly
     return 60 * 60 * 1000; // 1 hour
   } else if (rangeMs <= 3 * MONTH) {
     // 7 days to 3 months: daily
