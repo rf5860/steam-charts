@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { 
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Brush 
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea 
 } from 'recharts';
 import { Search, X, Activity, AlertCircle, RotateCcw } from 'lucide-react';
 import { format } from 'date-fns';
@@ -27,6 +27,73 @@ type SelectedGame = Game & {
 // Colors for different lines
 const COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
+// Utility function to aggregate data points by time interval
+const aggregateData = (data: HistoricalPoint[], intervalMs: number): HistoricalPoint[] => {
+  if (data.length === 0) return [];
+  
+  const buckets = new Map<number, { sum: number; count: number }>();
+  
+  data.forEach(point => {
+    // Round down to the nearest interval
+    const bucketKey = Math.floor(point.date / intervalMs) * intervalMs;
+    
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, { sum: 0, count: 0 });
+    }
+    
+    const bucket = buckets.get(bucketKey)!;
+    bucket.sum += point.count;
+    bucket.count += 1;
+  });
+  
+  // Convert buckets to array and calculate averages
+  return Array.from(buckets.entries())
+    .map(([date, { sum, count }]) => ({
+      date,
+      count: Math.round(sum / count)
+    }))
+    .sort((a, b) => a.date - b.date);
+};
+
+// Determine appropriate interval based on time range
+const getAggregationInterval = (startDate: number, endDate: number): number => {
+  const rangeMs = endDate - startDate;
+  const DAY = 24 * 60 * 60 * 1000;
+  const WEEK = 7 * DAY;
+  const MONTH = 30 * DAY;
+  
+  if (rangeMs <= 7 * DAY) {
+    // Less than 7 days: hourly (or keep all data)
+    return 60 * 60 * 1000; // 1 hour
+  } else if (rangeMs <= 3 * MONTH) {
+    // 7 days to 3 months: daily
+    return DAY;
+  } else if (rangeMs <= 12 * MONTH) {
+    // 3 months to 1 year: weekly
+    return WEEK;
+  } else {
+    // More than 1 year: monthly
+    return MONTH;
+  }
+};
+
+// Get appropriate date format based on time range
+const getDateFormat = (startDate: number, endDate: number): string => {
+  const rangeMs = endDate - startDate;
+  const DAY = 24 * 60 * 60 * 1000;
+  const MONTH = 30 * DAY;
+  
+  if (rangeMs <= 7 * DAY) {
+    return 'MMM d, HH:mm';
+  } else if (rangeMs <= 3 * MONTH) {
+    return 'MMM d';
+  } else if (rangeMs <= 12 * MONTH) {
+    return 'MMM d, yyyy';
+  } else {
+    return 'MMM yyyy';
+  }
+};
+
 export default function SteamCompareApp() {
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Game[]>([]);
@@ -36,8 +103,11 @@ export default function SteamCompareApp() {
   const [usedColors, setUsedColors] = useState<Set<string>>(new Set());
   const [startDate, setStartDate] = useState<number | null>(null);
   const [endDate, setEndDate] = useState<number | null>(null);
-  const [brushStartIndex, setBrushStartIndex] = useState<number | undefined>(undefined);
-  const [brushEndIndex, setBrushEndIndex] = useState<number | undefined>(undefined);
+  
+  // State for drag-to-zoom
+  const [refAreaLeft, setRefAreaLeft] = useState<string | number>('');
+  const [refAreaRight, setRefAreaRight] = useState<string | number>('');
+  const [isSelecting, setIsSelecting] = useState(false);
 
   // Get next available color
   const getNextAvailableColor = (): string => {
@@ -55,8 +125,6 @@ export default function SteamCompareApp() {
     if (selectedGames.length === 0) {
       setStartDate(null);
       setEndDate(null);
-      setBrushStartIndex(undefined);
-      setBrushEndIndex(undefined);
       return;
     }
 
@@ -145,17 +213,33 @@ export default function SteamCompareApp() {
     setSelectedGames(prev => prev.filter(g => g.id !== id));
   };
 
-  // 3. Process Data for Recharts
-  // We need to merge all games into a single array of objects based on timestamp
+  // 3. Process Data for Recharts with aggregation
   const processChartData = () => {
-    if (selectedGames.length === 0) return [];
+    if (selectedGames.length === 0 || startDate === null || endDate === null) return [];
 
-    // Create a map of all unique dates across all games
+    // Determine aggregation interval based on date range
+    const intervalMs = getAggregationInterval(startDate, endDate);
+
+    // Aggregate each game's data first
+    const aggregatedGames = selectedGames.map(game => {
+      // Filter data to date range first
+      const filteredData = game.data.filter(point => point.date >= startDate && point.date <= endDate);
+      
+      // Aggregate the filtered data
+      const aggregated = aggregateData(filteredData, intervalMs);
+      
+      return {
+        ...game,
+        aggregatedData: aggregated
+      };
+    });
+
+    // Create a map of all unique dates across all aggregated games
     const dateMap = new Map<number, any>();
 
-    selectedGames.forEach(game => {
-      game.data.forEach(point => {
-        const dateKey = point.date; 
+    aggregatedGames.forEach(game => {
+      game.aggregatedData.forEach(point => {
+        const dateKey = point.date;
         
         if (!dateMap.has(dateKey)) {
           dateMap.set(dateKey, { date: dateKey });
@@ -166,17 +250,17 @@ export default function SteamCompareApp() {
     });
 
     // Convert map to array and sort by date
-    let data = Array.from(dateMap.values()).sort((a, b) => a.date - b.date);
-
-    // Filter by date range if set
-    if (startDate !== null && endDate !== null) {
-      data = data.filter(point => point.date >= startDate && point.date <= endDate);
-    }
+    const data = Array.from(dateMap.values()).sort((a, b) => a.date - b.date);
 
     return data;
   };
 
   const chartData = processChartData();
+  
+  // Get dynamic date format based on current range
+  const dateFormat = startDate !== null && endDate !== null 
+    ? getDateFormat(startDate, endDate) 
+    : 'MMM yyyy';
 
   // Reset zoom to default
   const resetZoom = () => {
@@ -204,8 +288,45 @@ export default function SteamCompareApp() {
       setStartDate(twelveMonthsAgo);
       setEndDate(now);
     }
-    setBrushStartIndex(undefined);
-    setBrushEndIndex(undefined);
+  };
+
+  // Drag-to-zoom handlers
+  const handleMouseDown = (e: any) => {
+    if (e && e.activeLabel) {
+      setRefAreaLeft(e.activeLabel);
+      setIsSelecting(true);
+    }
+  };
+
+  const handleMouseMove = (e: any) => {
+    if (isSelecting && e && e.activeLabel) {
+      setRefAreaRight(e.activeLabel);
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (!isSelecting) return;
+    
+    setIsSelecting(false);
+    
+    if (refAreaLeft === refAreaRight || refAreaRight === '') {
+      setRefAreaLeft('');
+      setRefAreaRight('');
+      return;
+    }
+
+    // Zoom into the selected area
+    let left = typeof refAreaLeft === 'number' ? refAreaLeft : parseInt(refAreaLeft);
+    let right = typeof refAreaRight === 'number' ? refAreaRight : parseInt(refAreaRight);
+
+    if (left > right) {
+      [left, right] = [right, left];
+    }
+
+    setStartDate(left);
+    setEndDate(right);
+    setRefAreaLeft('');
+    setRefAreaRight('');
   };
 
   // Handle date input changes
@@ -331,7 +452,12 @@ export default function SteamCompareApp() {
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 md:p-6 shadow-2xl h-[500px]">
           {selectedGames.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData}>
+              <AreaChart 
+                data={chartData}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+              >
                 <defs>
                   {selectedGames.map(game => (
                     <linearGradient key={game.id} id={`color-${game.id}`} x1="0" y1="0" x2="0" y2="1">
@@ -345,8 +471,9 @@ export default function SteamCompareApp() {
                   dataKey="date" 
                   stroke="#94a3b8" 
                   fontSize={12}
-                  tickFormatter={(unix) => format(new Date(unix), 'MMM yyyy')}
+                  tickFormatter={(unix) => format(new Date(unix), dateFormat)}
                   minTickGap={50}
+                  domain={['dataMin', 'dataMax']}
                 />
                 <YAxis 
                   stroke="#94a3b8" 
@@ -370,29 +497,22 @@ export default function SteamCompareApp() {
                     connectNulls={true}
                   />
                 ))}
-                <Brush
-                  dataKey="date"
-                  height={30}
-                  stroke="#475569"
-                  fill="#1e293b"
-                  tickFormatter={(unix) => format(new Date(unix), 'MMM yyyy')}
-                  startIndex={brushStartIndex}
-                  endIndex={brushEndIndex}
-                  onChange={(range: any) => {
-                    if (range && chartData.length > 0) {
-                      setBrushStartIndex(range.startIndex);
-                      setBrushEndIndex(range.endIndex);
-                      setStartDate(chartData[range.startIndex].date);
-                      setEndDate(chartData[range.endIndex].date);
-                    }
-                  }}
-                />
+                {refAreaLeft && refAreaRight && (
+                  <ReferenceArea
+                    x1={refAreaLeft}
+                    x2={refAreaRight}
+                    strokeOpacity={0.3}
+                    fill="#3b82f6"
+                    fillOpacity={0.3}
+                  />
+                )}
               </AreaChart>
             </ResponsiveContainer>
           ) : (
             <div className="h-full flex flex-col items-center justify-center text-slate-600">
               <Activity className="w-16 h-16 mb-4 opacity-20" />
               <p>Add a game to view its lifetime player history</p>
+              <p className="text-sm mt-2 text-slate-700">Tip: Click and drag on the chart to zoom into a time range</p>
             </div>
           )}
         </div>
